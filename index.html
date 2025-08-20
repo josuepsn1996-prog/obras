@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <title>Mapa de Obras</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+  <style>
+    body { margin: 0; font-family: sans-serif; }
+    #map { height: 90vh; }
+    .popup-img {
+      width: 100px;
+      margin: 5px;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    details summary {
+      cursor: pointer;
+      font-weight: bold;
+      margin-top: 6px;
+    }
+    .controls {
+      padding: 10px;
+      background: #f2f2f2;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    select {
+      padding: 4px;
+    }
+    dialog::backdrop {
+      background: rgba(0, 0, 0, 0.6);
+    }
+    dialog {
+      max-width: 90%;
+      border: none;
+      border-radius: 10px;
+      padding: 10px;
+    }
+    #timelapseModal img {
+      width: 100%;
+      max-width: 600px;
+      display: block;
+      margin: auto;
+    }
+    #timelapseFecha {
+      text-align: center;
+      font-weight: bold;
+      margin-top: 10px;
+    }
+    #timelapseControles {
+      text-align: center;
+      margin-top: 10px;
+    }
+  </style>
+</head>
+<body>
+
+  <div class="controls">
+    <label for="id">ID:</label>
+    <select id="id"><option value="">Todos</option></select>
+
+    <label for="municipio">Municipio:</label>
+    <select id="municipio"><option value="">Todos</option></select>
+
+    <label for="tipo">Tipo de obra:</label>
+    <select id="tipo"><option value="">Todos</option></select>
+  </div>
+
+  <div id="map"></div>
+
+  <!-- MODAL para Timelapse -->
+  <dialog id="timelapseModal">
+    <img id="timelapseImg" src="" alt="Timelapse">
+    <div id="timelapseFecha"></div>
+    <div id="timelapseControles">
+      <label for="timelapseVelocidad">Velocidad:</label>
+      <select id="timelapseVelocidad">
+        <option value="2000">0.5x</option>
+        <option value="1000" selected>1x</option>
+        <option value="500">2x</option>
+      </select>
+      <br><br>
+      <button onclick="repetirTimelapse()">Repetir timelapse</button>
+      <button onclick="document.getElementById('timelapseModal').close()">Cerrar</button>
+    </div>
+  </dialog>
+
+  <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+
+  <script>
+    const csvUrl = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTVquIVeEYYM5fRrXHolxm1n4u0J52SxYoQEcXw9AGcyVNeugMCsxuWmOZJYtVXXYdgcryMtm1OQDkj/pub?gid=1770483882&single=true&output=csv";
+    const map = L.map('map').setView([23.6345, -102.5528], 6);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      attribution: '© OpenStreetMap'
+    }).addTo(map);
+
+    const iconUrls = {
+      red: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-red.png',
+      orange: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-orange.png',
+      yellow: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-yellow.png',
+      green: 'https://raw.githubusercontent.com/pointhi/leaflet-color-markers/master/img/marker-icon-green.png'
+    };
+
+    let allMarkers = [];
+
+    function crearMarcadores(data, idFiltro = "", municipioFiltro = "", tipoFiltro = "") {
+      allMarkers.forEach(m => map.removeLayer(m));
+      allMarkers = [];
+
+      data.forEach(row => {
+        if (!row.lat || !row.lon) return;
+        if (idFiltro && row.id !== idFiltro) return;
+        if (municipioFiltro && row.municipio !== municipioFiltro) return;
+        if (tipoFiltro && row.tipo !== tipoFiltro) return;
+
+        const lat = parseFloat(row.lat);
+        const lon = parseFloat(row.lon);
+        if (isNaN(lat) || isNaN(lon)) return;
+
+        let fotos = "";
+        let fotosPorFecha = [];
+
+        if (row.avance_fotos) {
+          const grupos = row.avance_fotos.split("||").map(s => s.trim());
+          fotos = "<b>Fotos por fecha:</b><br>" + grupos.map(grupo => {
+            const [fecha, urlsRaw] = grupo.split("|").map(s => s.trim());
+            if (!urlsRaw) return "";
+            const urls = urlsRaw.split(/[\s;]/).map(url => {
+              url = url.trim();
+              if (url.includes("drive.google.com") && url.includes("open?id=")) {
+                const id = url.split("open?id=")[1];
+                url = `https://drive.google.com/uc?export=view&id=${id}`;
+              } else if (url.includes("drive.google.com/file/d/")) {
+                const id = url.split("file/d/")[1].split("/")[0];
+                url = `https://drive.google.com/uc?export=view&id=${id}`;
+              }
+              fotosPorFecha.push({ fecha, url });
+              return `<a href="${url}" target="_blank"><img src="${url}" class="popup-img"></a>`;
+            }).join("");
+            return `<details><summary>${fecha}</summary>${urls}</details>`;
+          }).join("");
+        }
+
+        let timelapseHtml = "";
+        if (fotosPorFecha.length > 0) {
+          const jsonData = encodeURIComponent(JSON.stringify(fotosPorFecha));
+          timelapseHtml = `<br><button onclick="verTimelapse('${jsonData}')">Ver timelapse</button>`;
+        }
+
+        const contenido = `
+          <b>${row.nombre}</b><br>
+          <b>Programa:</b> ${row.programa}<br>
+          <b>Municipio:</b> ${row.municipio}<br>
+          <b>Localidad:</b> ${row.localidad}<br>
+          <b>Tipo:</b> ${row.tipo}<br>
+          <b>Presupuesto:</b> ${row.presupuesto}<br>
+          <b>Contratista:</b> ${row.contratista}<br>
+          <b>Inicio:</b> ${row.inicio}<br>
+          <b>Fin programado:</b> ${row.fin_programado}<br>
+          <b>Estatus:</b> ${row.estatus}<br>
+          <b>Avance:</b> ${row.avance || 0}%<br>
+          <b>Actualizado el:</b> ${row.actualizado_el}<br>
+          ${fotos}
+          ${timelapseHtml}
+          ${row.ficha_url ? `<br><a href="${row.ficha_url}" target="_blank">Ver ficha técnica</a>` : ""}
+        `;
+
+        let avance = parseFloat(row.avance);
+        let color = "red";
+        if (avance > 75) color = "green";
+        else if (avance > 50) color = "yellow";
+        else if (avance > 25) color = "orange";
+
+        const icono = new L.Icon({
+          iconUrl: iconUrls[color],
+          iconSize: [25, 41],
+          iconAnchor: [12, 41],
+          popupAnchor: [1, -34],
+          shadowUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-shadow.png',
+          shadowSize: [41, 41]
+        });
+
+        const marker = L.marker([lat, lon], { icon: icono }).addTo(map).bindPopup(contenido);
+        allMarkers.push(marker);
+      });
+    }
+
+    let fotosTimelapse = [];
+    let indexTimelapse = 0;
+    let intervalo;
+
+    function mostrarSiguiente() {
+      if (indexTimelapse >= fotosTimelapse.length) return;
+      const img = document.getElementById("timelapseImg");
+      const fecha = document.getElementById("timelapseFecha");
+      img.src = fotosTimelapse[indexTimelapse].url;
+      fecha.textContent = fotosTimelapse[indexTimelapse].fecha;
+      indexTimelapse++;
+      const velocidad = parseInt(document.getElementById("timelapseVelocidad").value);
+      intervalo = setTimeout(mostrarSiguiente, velocidad);
+    }
+
+    function verTimelapse(jsonData) {
+      fotosTimelapse = JSON.parse(decodeURIComponent(jsonData));
+      indexTimelapse = 0;
+      clearTimeout(intervalo);
+      document.getElementById("timelapseModal").showModal();
+      mostrarSiguiente();
+    }
+
+    function repetirTimelapse() {
+      indexTimelapse = 0;
+      clearTimeout(intervalo);
+      mostrarSiguiente();
+    }
+
+    Papa.parse(csvUrl, {
+      download: true,
+      header: true,
+      complete: function(results) {
+        const data = results.data;
+
+        const municipios = [...new Set(data.map(r => r.municipio).filter(Boolean))].sort();
+        const tipos = [...new Set(data.map(r => r.tipo).filter(Boolean))].sort();
+        const ids = [...new Set(data.map(r => r.id).filter(Boolean))].sort((a, b) => a - b);
+
+        municipios.forEach(m => {
+          document.getElementById("municipio").innerHTML += `<option value="${m}">${m}</option>`;
+        });
+        tipos.forEach(t => {
+          document.getElementById("tipo").innerHTML += `<option value="${t}">${t}</option>`;
+        });
+        ids.forEach(id => {
+          document.getElementById("id").innerHTML += `<option value="${id}">${id}</option>`;
+        });
+
+        ["municipio", "tipo", "id"].forEach(id => {
+          document.getElementById(id).addEventListener("change", () => {
+            crearMarcadores(
+              data,
+              document.getElementById("id").value,
+              document.getElementById("municipio").value,
+              document.getElementById("tipo").value
+            );
+          });
+        });
+
+        crearMarcadores(data);
+      }
+    });
+  </script>
+</body>
+</html>
